@@ -318,16 +318,50 @@ BKEOF
 # ─────────────────────────────────────────────
 # نصب AmneziaWG
 # ─────────────────────────────────────────────
+apt_locked() {
+  fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend &>/dev/null
+}
+
+force_unlock_apt() {
+  show_info "در حال متوقف کردن آپدیت خودکار اوبونتو..."
+  systemctl stop unattended-upgrades 2>/dev/null || true
+  systemctl stop apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+  systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
+  killall apt apt-get unattended-upgrade 2>/dev/null || true
+  sleep 3
+  # رفع قفل و بازیابی dpkg در صورت نیمه‌کاره ماندن
+  rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend 2>/dev/null || true
+  dpkg --configure -a 2>/dev/null || true
+  show_success "قفل apt آزاد شد"
+}
+
 wait_apt_lock() {
-  local i=0
-  while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend &>/dev/null; do
-    if [ $i -eq 0 ]; then show_info "منتظر آزاد شدن apt lock..."; fi
-    sleep 3; ((i++)) || true
-    if [ $i -gt 40 ]; then
-      show_error "apt lock بعد از ۲ دقیقه آزاد نشد"
-      exit 1
+  apt_locked || return 0
+  show_info "یک فرآیند دیگر در حال استفاده از apt است (معمولاً آپدیت خودکار اوبونتو)"
+  local i=0 pid pname
+  while apt_locked; do
+    sleep 5; ((i++)) || true
+    # هر ۳۰ ثانیه وضعیت را گزارش بده
+    if [ $((i % 6)) -eq 0 ]; then
+      pid=$(fuser /var/lib/dpkg/lock-frontend 2>/dev/null | tr -d ' ')
+      pname=$(ps -o comm= -p "${pid:-0}" 2>/dev/null | head -1)
+      show_info "هنوز قفل است (فرآیند: ${pname:-نامشخص}) — $((i*5)) ثانیه گذشت..."
+    fi
+    # بعد از ۹۰ ثانیه از کاربر بپرس
+    if [ $i -ge 18 ]; then
+      echo
+      show_error "apt بعد از ۹۰ ثانیه هنوز قفل است."
+      echo "   احتمالاً آپدیت خودکار اوبونتو (unattended-upgrades) در حال اجراست."
+      show_ask "می‌خواهید این فرآیند را متوقف کنم تا نصب ادامه یابد؟ (y = متوقف کن / n = صبر می‌کنم):"
+      read -p "   > " kill_choice
+      if [ "$kill_choice" = "y" ] || [ "$kill_choice" = "Y" ]; then
+        force_unlock_apt
+        return 0
+      fi
+      i=0  # دوباره صبر کن
     fi
   done
+  show_success "قفل apt آزاد شد"
 }
 
 install_amneziawg() {
