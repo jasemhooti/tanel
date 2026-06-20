@@ -1,24 +1,23 @@
 #!/bin/bash
 set -e
 
-# ─────────────────────────────────────────────
-# رنگ‌ها
-# ─────────────────────────────────────────────
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 LINE="================================================================"
+THIN="────────────────────────────────────────────────────────────────"
 
 show_error()   { echo -e "${RED}❌ $1${NC}";    log "ERROR" "$1"; }
 show_success() { echo -e "${GREEN}✅ $1${NC}";  log "OK"    "$1"; }
 show_info()    { echo -e "${YELLOW}🔹 $1${NC}"; log "INFO"  "$1"; }
-show_header()  { echo -e "${CYAN}$LINE\n$1\n$LINE${NC}"; }
+show_header()  { echo -e "${CYAN}$LINE\n   $1\n$LINE${NC}"; }
+show_step()    { echo -e "\n${BLUE}${THIN}\n   $1\n${THIN}${NC}"; }
+show_note()    { echo -e "${YELLOW}   ℹ️  $1${NC}"; }
+show_ask()     { echo -e "${GREEN}   ❓ $1${NC}"; }
 
-# ─────────────────────────────────────────────
-# لاگ با چرخش خودکار (max 5MB، 3 فایل)
-# ─────────────────────────────────────────────
 LOG_FILE="/var/log/wg-xui.log"
 TG_CONFIG="/etc/wg-xui/telegram.conf"
 XUI_DB="/etc/x-ui/x-ui.db"
@@ -34,17 +33,11 @@ log() {
   fi
 }
 
-# ─────────────────────────────────────────────
-# بررسی دسترسی root
-# ─────────────────────────────────────────────
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}❌ لطفاً این اسکریپت را با دسترسی root اجرا کنید${NC}"
   exit 1
 fi
 
-# ─────────────────────────────────────────────
-# تشخیص ابزار و interface فعال
-# ─────────────────────────────────────────────
 detect_setup() {
   if command -v awg-quick &>/dev/null; then
     WG_CMD="awg-quick"; WG_IFACE="awg0"; WG_CONF_DIR="/etc/amnezia/amneziawg"
@@ -56,81 +49,93 @@ detect_setup() {
 # ─────────────────────────────────────────────
 # توابع تلگرام
 # ─────────────────────────────────────────────
-tg_load() {
-  [ -f "$TG_CONFIG" ] && source "$TG_CONFIG" || true
-}
+tg_load() { [ -f "$TG_CONFIG" ] && source "$TG_CONFIG" || true; }
 
 tg_send() {
   tg_load
   [ -z "$TG_TOKEN" ] || [ -z "$TG_ADMIN_ID" ] && return 0
-  local text="$1"
   curl -s --max-time 10 \
     "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_ADMIN_ID}" \
-    -d "text=${text}" \
-    -d "parse_mode=HTML" \
+    -d "chat_id=${TG_ADMIN_ID}" -d "text=$1" -d "parse_mode=HTML" \
     -o /dev/null || true
 }
 
 tg_send_file() {
   tg_load
   [ -z "$TG_TOKEN" ] || [ -z "$TG_ADMIN_ID" ] && return 0
-  local file="$1" caption="$2"
   curl -s --max-time 30 \
     "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
-    -F "chat_id=${TG_ADMIN_ID}" \
-    -F "document=@${file}" \
-    -F "caption=${caption}" \
+    -F "chat_id=${TG_ADMIN_ID}" -F "document=@$1" -F "caption=$2" \
     -o /dev/null || true
 }
 
 # ─────────────────────────────────────────────
-# تنظیم توکن تلگرام
+# تنظیم ربات تلگرام
 # ─────────────────────────────────────────────
 setup_telegram() {
-  show_header "تنظیم ربات تلگرام"
-  echo "برای ساخت ربات به @BotFather در تلگرام مراجعه کنید"
-  echo "سپس توکن و Chat ID ادمین را وارد کنید"
-  echo "(برای رد کردن Enter بزنید)"
-  echo
-  read -p "توکن ربات (مثال: 123456:ABC-DEF...): " input_token
+  show_step "تنظیم ربات تلگرام (اختیاری)"
+
+  echo -e "
+   ربات تلگرام به شما امکان می‌دهد:
+   • اعلان‌های خودکار قطعی و ری‌استارت تونل را دریافت کنید
+   • از طریق تلگرام تونل را مدیریت کنید
+   • هر شب بکاپ خودکار X-UI به تلگرام ارسال شود
+
+   ${YELLOW}برای ساخت ربات:${NC}
+   ۱. در تلگرام @BotFather را جستجو کنید
+   ۲. دستور /newbot را بزنید
+   ۳. یک نام و username برای ربات انتخاب کنید
+   ۴. توکن نمایش داده شده را کپی کنید (شکل: 123456789:ABC-xyz...)
+
+   ${YELLOW}برای Chat ID:${NC}
+   ۱. ربات @userinfobot را در تلگرام جستجو کنید
+   ۲. /start بزنید — عدد «Id» نشان داده می‌شود همان Chat ID شماست
+
+   ${RED}اگر ربات نمی‌خواهید فقط Enter بزنید تا رد شود.${NC}
+"
+
+  show_ask "توکن ربات را وارد کنید (یا Enter برای رد کردن):"
+  read -p "   > " input_token
   if [ -z "$input_token" ]; then
-    show_info "تلگرام رد شد"
-    return
-  fi
-  read -p "Chat ID ادمین (عدد): " input_admin_id
-  if [ -z "$input_admin_id" ]; then
-    show_info "تلگرام رد شد"
+    show_info "ربات تلگرام رد شد — بعداً می‌توانید اضافه کنید"
     return
   fi
 
-  # تست توکن
+  show_ask "Chat ID ادمین را وارد کنید (عدد شخصی شما از @userinfobot):"
+  read -p "   > " input_admin_id
+  if [ -z "$input_admin_id" ]; then
+    show_info "ربات تلگرام رد شد"
+    return
+  fi
+
   show_info "در حال بررسی توکن..."
   local result
   result=$(curl -s --max-time 10 "https://api.telegram.org/bot${input_token}/getMe")
   if echo "$result" | grep -q '"ok":true'; then
+    local bot_name
+    bot_name=$(echo "$result" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
     mkdir -p /etc/wg-xui
     cat > "$TG_CONFIG" <<EOF
 TG_TOKEN="${input_token}"
 TG_ADMIN_ID="${input_admin_id}"
 EOF
     chmod 600 "$TG_CONFIG"
-    show_success "توکن ربات معتبر است"
-    tg_send "✅ <b>ربات متصل شد</b>%0Aسرور: $(hostname)%0AIP: $(curl -s --max-time 5 ifconfig.me)"
-    show_success "پیام تست به تلگرام ارسال شد"
+    show_success "ربات @${bot_name} با موفقیت تنظیم شد"
+    tg_send "✅ <b>ربات متصل شد</b>%0Aسرور: $(hostname)%0AIP: $(curl -s --max-time 5 ifconfig.me || echo نامشخص)"
+    show_success "پیام تست در تلگرام ارسال شد — بررسی کنید"
   else
-    show_error "توکن نامعتبر است — تلگرام تنظیم نشد"
+    show_error "توکن نامعتبر است — ربات تلگرام تنظیم نشد"
   fi
 }
 
 # ─────────────────────────────────────────────
-# ساخت سرویس ربات تلگرام (Python polling)
+# ساخت سرویس ربات تلگرام
 # ─────────────────────────────────────────────
 install_telegram_bot() {
   tg_load
   [ -z "$TG_TOKEN" ] && return 0
 
-  show_info "نصب ربات تلگرام..."
+  show_info "نصب سرویس ربات تلگرام..."
   apt install -y python3 python3-pip -qq
   pip3 install requests -q
 
@@ -138,14 +143,17 @@ install_telegram_bot() {
 
   cat > /usr/local/bin/wg-tgbot.py <<PYEOF
 #!/usr/bin/env python3
-import requests, subprocess, os, time, json, shutil
+import requests, subprocess, os, time, shutil
 from datetime import datetime
 
-TOKEN    = open("/etc/wg-xui/telegram.conf").read()
-TOKEN    = [l.split("=")[1].strip().strip('"') for l in TOKEN.splitlines() if l.startswith("TG_TOKEN")][0]
-ADMIN_ID = open("/etc/wg-xui/telegram.conf").read()
-ADMIN_ID = int([l.split("=")[1].strip().strip('"') for l in ADMIN_ID.splitlines() if l.startswith("TG_ADMIN_ID")][0])
+def _cfg(key):
+    for l in open("/etc/wg-xui/telegram.conf"):
+        if l.startswith(key):
+            return l.split("=",1)[1].strip().strip('"')
+    return ""
 
+TOKEN    = _cfg("TG_TOKEN")
+ADMIN_ID = int(_cfg("TG_ADMIN_ID"))
 WG_CMD   = "${WG_CMD}"
 WG_IFACE = "${WG_IFACE}"
 LOG_FILE = "/var/log/wg-xui.log"
@@ -165,23 +173,21 @@ def send_file(path, caption="", chat_id=ADMIN_ID):
         with open(path, "rb") as f:
             requests.post(f"{API}/sendDocument",
                           data={"chat_id": chat_id, "caption": caption},
-                          files={"document": f},
-                          timeout=30)
+                          files={"document": f}, timeout=30)
     except Exception:
         pass
 
 def run(cmd):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-        return (r.stdout + r.stderr).strip() or "✅ اجرا شد"
+        return (r.stdout + r.stderr).strip() or "اجرا شد"
     except Exception as e:
-        return f"❌ خطا: {e}"
+        return f"خطا: {e}"
 
 def backup_xui():
     if not os.path.exists(XUI_DB):
         return None
-    ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dst = f"/tmp/x-ui-backup-{ts}.db"
+    dst = f"/tmp/x-ui-backup-{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
     shutil.copy2(XUI_DB, dst)
     return dst
 
@@ -193,23 +199,31 @@ HELP = """📋 <b>دستورات ربات:</b>
 /start — شروع تونل
 /stop — توقف تونل
 /log — آخرین ۵۰ خط لاگ
-/test — تست اتصال
-/backup — پشتیبان‌گیری از X-UI
+/test — تست اتصال (ping، اینترنت، X-UI)
+/backup — ارسال فوری بکاپ X-UI
 /help — این راهنما"""
 
+def cmd_status():
+    out = run(f"systemctl status {WG_CMD}@{WG_IFACE} --no-pager -l | head -20")
+    return f"📊 <b>وضعیت تونل:</b>\n<pre>{out}</pre>"
+
+def cmd_test():
+    ping  = run("ping -c 3 -W 4 10.8.0.1")
+    inet  = run("curl -s --max-time 8 https://1.1.1.1 -o /dev/null -w '%{http_code}'")
+    xui   = run("systemctl is-active x-ui")
+    p = '✅' if '0%' in ping  else '❌'
+    i = '✅' if '200' in inet else '❌'
+    x = '✅' if 'active' in xui else '❌'
+    return f"🧪 <b>نتیجه تست:</b>\n{p} ping سرور خارجی\n{i} اینترنت از طریق تونل\n{x} سرویس X-UI"
+
 COMMANDS = {
-    "/start":       lambda: "👋 ربات فعال است. /help برای راهنما",
     "/help":        lambda: HELP,
-    "/status":      lambda: f"📊 <b>وضعیت تونل:</b>\n<pre>{run(f'systemctl status {WG_CMD}@{WG_IFACE} --no-pager -l | head -20')}</pre>",
-    "/restart":     lambda: f"🔄 {run(f'systemctl restart {WG_CMD}@{WG_IFACE}')}  تونل ری‌استارت شد",
-    "/restart_xui": lambda: f"🔄 {run('systemctl restart x-ui')}  X-UI ری‌استارت شد",
-    "/stop":        lambda: f"⏹ {run(f'systemctl stop {WG_CMD}@{WG_IFACE}')}  تونل متوقف شد",
-    "/test":        lambda: (
-        lambda ping=run("ping -c 3 -W 4 10.8.0.1"),
-               inet=run("curl -s --max-time 8 https://1.1.1.1 -o /dev/null -w '%{http_code}'"),
-               xui=run("systemctl is-active x-ui"):
-        f"🧪 <b>نتیجه تست:</b>\nping سرور خارجی: {'✅' if '0%' in ping else '❌'}\nاینترنت: {'✅' if inet.strip()=='200' else '❌'}\nX-UI: {'✅' if xui.strip()=='active' else '❌'}"
-    )(),
+    "/status":      cmd_status,
+    "/restart":     lambda: f"🔄 تونل ری‌استارت شد\n<pre>{run(f'systemctl restart {WG_CMD}@{WG_IFACE}')}</pre>",
+    "/restart_xui": lambda: f"🔄 X-UI ری‌استارت شد\n<pre>{run('systemctl restart x-ui')}</pre>",
+    "/start":       lambda: f"▶️ تونل شروع شد\n<pre>{run(f'systemctl start {WG_CMD}@{WG_IFACE}')}</pre>",
+    "/stop":        lambda: f"⏹ تونل متوقف شد\n<pre>{run(f'systemctl stop {WG_CMD}@{WG_IFACE}')}</pre>",
+    "/test":        cmd_test,
 }
 
 def handle_log(chat_id):
@@ -235,12 +249,10 @@ send("🚀 <b>ربات راه‌اندازی شد</b>\n" + HELP)
 while True:
     try:
         r = requests.get(f"{API}/getUpdates",
-                         params={"offset": offset, "timeout": 30},
-                         timeout=35)
-        updates = r.json().get("result", [])
-        for u in updates:
+                         params={"offset": offset, "timeout": 30}, timeout=35)
+        for u in r.json().get("result", []):
             offset = u["update_id"] + 1
-            msg    = u.get("message") or u.get("edited_message", {})
+            msg  = u.get("message") or u.get("edited_message", {})
             if not msg:
                 continue
             cid  = msg["chat"]["id"]
@@ -248,14 +260,10 @@ while True:
             if cid != ADMIN_ID:
                 send("⛔ دسترسی ندارید", cid)
                 continue
-            if text == "/log":
-                handle_log(cid)
-            elif text == "/backup":
-                handle_backup(cid)
-            elif text in COMMANDS:
-                send(COMMANDS[text](), cid)
-            else:
-                send("❓ دستور نامشخص — /help", cid)
+            if   text == "/log":    handle_log(cid)
+            elif text == "/backup": handle_backup(cid)
+            elif text in COMMANDS:  send(COMMANDS[text](), cid)
+            else:                   send("❓ دستور نامشخص\n" + HELP, cid)
     except Exception:
         time.sleep(5)
 PYEOF
@@ -281,11 +289,11 @@ EOF
 
   systemctl daemon-reload
   systemctl enable --now wg-tgbot
-  show_success "ربات تلگرام نصب و فعال شد"
+  show_success "سرویس ربات تلگرام فعال شد"
 }
 
 # ─────────────────────────────────────────────
-# پشتیبان‌گیری خودکار از X-UI
+# پشتیبان‌گیری خودکار X-UI
 # ─────────────────────────────────────────────
 setup_xui_backup() {
   tg_load
@@ -295,27 +303,20 @@ setup_xui_backup() {
 #!/bin/bash
 source /etc/wg-xui/telegram.conf 2>/dev/null || exit 0
 XUI_DB="/etc/x-ui/x-ui.db"
-LOG="/var/log/wg-xui.log"
 [ -f "$XUI_DB" ] || exit 0
-
-TS=$(date '+%Y%m%d_%H%M%S')
-DST="/tmp/x-ui-backup-${TS}.db"
+DST="/tmp/x-ui-backup-$(date '+%Y%m%d_%H%M%S').db"
 cp "$XUI_DB" "$DST"
-
 curl -s --max-time 30 \
   "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
   -F "chat_id=${TG_ADMIN_ID}" \
   -F "document=@${DST}" \
   -F "caption=💾 بکاپ خودکار X-UI — $(date '+%Y-%m-%d %H:%M')" \
   -o /dev/null
-
 rm -f "$DST"
-echo "$(date '+%Y-%m-%d %H:%M:%S') [BACKUP] x-ui backup sent to telegram" >> "$LOG"
+echo "$(date '+%Y-%m-%d %H:%M:%S') [BACKUP] x-ui backup sent" >> /var/log/wg-xui.log
 BKEOF
 
   chmod +x /usr/local/bin/wg-xui-backup
-
-  # هر روز ساعت ۳ شب
   if ! crontab -l 2>/dev/null | grep -q "wg-xui-backup"; then
     (crontab -l 2>/dev/null; echo "0 3 * * * /usr/local/bin/wg-xui-backup") | crontab -
     show_success "پشتیبان‌گیری خودکار هر روز ساعت ۳ صبح تنظیم شد"
@@ -326,54 +327,47 @@ BKEOF
 # نصب AmneziaWG
 # ─────────────────────────────────────────────
 install_amneziawg() {
-  show_info "نصب AmneziaWG (ضد فیلتر)..."
+  show_info "نصب AmneziaWG (ضد شناسایی توسط فیلترینگ)..."
   apt update -qq
   if ! command -v awg-quick &>/dev/null; then
     apt install -y software-properties-common
     add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
     apt update -qq
     apt install -y amneziawg amneziawg-tools || {
-      show_info "PPA در دسترس نیست، fallback به WireGuard..."
+      show_info "PPA در دسترس نیست، نصب WireGuard معمولی..."
       apt install -y wireguard-dkms wireguard-tools linux-headers-$(uname -r) git make gcc
     }
   fi
 }
 
 # ─────────────────────────────────────────────
-# تست کامل اتصال
+# تست خودکار بعد از نصب
 # ─────────────────────────────────────────────
 run_post_install_test() {
-  local role="$1"
-  local foreign_wg_ip="$2"
-  local report=""
+  local role="$1" foreign_wg_ip="$2" report="" pass=0 fail=0
 
-  show_header "تست خودکار بعد از نصب"
-  local pass=0 fail=0
+  show_step "تست خودکار بعد از نصب"
+  detect_setup
 
   _check() {
     local label="$1" cmd="$2"
     if eval "$cmd" &>/dev/null; then
-      echo -e "  ${GREEN}✅ $label${NC}"
-      log "TEST-OK" "$label"
-      report+="✅ $label%0A"
-      ((pass++)) || true
+      echo -e "   ${GREEN}✅ $label${NC}"; log "TEST-OK" "$label"
+      report+="✅ $label%0A"; ((pass++)) || true
     else
-      echo -e "  ${RED}❌ $label${NC}"
-      log "TEST-FAIL" "$label"
-      report+="❌ $label%0A"
-      ((fail++)) || true
+      echo -e "   ${RED}❌ $label${NC}"; log "TEST-FAIL" "$label"
+      report+="❌ $label%0A"; ((fail++)) || true
     fi
   }
 
-  detect_setup
-  _check "سرویس تونل فعال است"   "systemctl is-active --quiet ${WG_CMD}@${WG_IFACE}"
-  _check "interface تونل بالا است" "ip link show ${WG_IFACE}"
+  _check "سرویس تونل فعال است"    "systemctl is-active --quiet ${WG_CMD}@${WG_IFACE}"
+  _check "interface تونل بالا است"  "ip link show ${WG_IFACE}"
 
   if [ "$role" = "iran" ]; then
-    _check "ping به سرور خارجی (${foreign_wg_ip})" "ping -c 2 -W 4 ${foreign_wg_ip}"
-    _check "دسترسی به اینترنت از طریق تونل"         "curl -s --max-time 8 https://1.1.1.1 -o /dev/null"
-    _check "DNS کار می‌کند"                          "nslookup google.com 8.8.8.8"
-    _check "سرویس 3X-UI فعال است"                   "systemctl is-active --quiet x-ui"
+    _check "ارتباط با سرور خارجی (${foreign_wg_ip})" "ping -c 2 -W 4 ${foreign_wg_ip}"
+    _check "دسترسی به اینترنت از طریق تونل"           "curl -s --max-time 8 https://1.1.1.1 -o /dev/null"
+    _check "DNS کار می‌کند"                            "nslookup google.com 8.8.8.8"
+    _check "سرویس 3X-UI فعال است"                     "systemctl is-active --quiet x-ui"
   fi
 
   if [ "$role" = "foreign" ]; then
@@ -383,11 +377,11 @@ run_post_install_test() {
 
   echo
   if [ "$fail" -eq 0 ]; then
-    show_success "همه تست‌ها موفق ($pass/$((pass+fail)))"
-    tg_send "✅ <b>تست نصب موفق — $role</b>%0A${report}سرور: $(hostname)"
+    show_success "همه تست‌ها موفق ($pass از $((pass+fail)))"
+    tg_send "✅ <b>تست نصب موفق</b>%0Aنقش: $role%0A${report}سرور: $(hostname)"
   else
-    show_error "$fail تست ناموفق — لاگ: $LOG_FILE"
-    tg_send "⚠️ <b>تست نصب: $fail ناموفق — $role</b>%0A${report}سرور: $(hostname)"
+    show_error "$fail تست ناموفق بود — لاگ: $LOG_FILE"
+    tg_send "⚠️ <b>$fail تست ناموفق</b>%0Aنقش: $role%0A${report}سرور: $(hostname)"
   fi
 }
 
@@ -395,8 +389,7 @@ run_post_install_test() {
 # Health Check
 # ─────────────────────────────────────────────
 setup_health_check() {
-  local role="$1"
-  local foreign_wg_ip="${2:-10.8.0.1}"
+  local role="$1" foreign_wg_ip="${2:-10.8.0.1}"
 
   cat > /usr/local/bin/wg-health-check <<HCEOF
 #!/bin/bash
@@ -406,24 +399,22 @@ WG_CMD="${WG_CMD}"
 source /etc/wg-xui/telegram.conf 2>/dev/null || true
 
 log_hc() { echo "\$(date '+%Y-%m-%d %H:%M:%S') [HEALTH] \$1" >> "\$LOG"; }
-tg()     {
+tg() {
   [ -z "\$TG_TOKEN" ] && return
   curl -s --max-time 10 "https://api.telegram.org/bot\${TG_TOKEN}/sendMessage" \
     -d "chat_id=\${TG_ADMIN_ID}" -d "text=\$1" -d "parse_mode=HTML" -o /dev/null || true
 }
 
-# چرخش لاگ
 if [ -f "\$LOG" ] && [ "\$(stat -c%s "\$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
   mv "\${LOG}.2" "\${LOG}.3" 2>/dev/null || true
   mv "\${LOG}.1" "\${LOG}.2" 2>/dev/null || true
-  mv "\$LOG"     "\${LOG}.1"
-  touch "\$LOG"
+  mv "\$LOG"     "\${LOG}.1"; touch "\$LOG"
 fi
 
 if ! systemctl is-active --quiet "\${WG_CMD}@\${IFACE}"; then
   log_hc "تونل متوقف بود، ری‌استارت..."
   systemctl restart "\${WG_CMD}@\${IFACE}"
-  tg "🔄 <b>تونل ری‌استارت شد</b>%0Aسرور: \$(hostname)"
+  tg "🔄 <b>تونل ری‌استارت شد (خودکار)</b>%0Aسرور: \$(hostname)"
   log_hc "تونل راه‌اندازی شد"
 fi
 HCEOF
@@ -440,14 +431,14 @@ if ! ping -c 2 -W 5 ${foreign_wg_ip} &>/dev/null; then
     tg "✅ <b>تونل بعد از قطعی وصل شد</b>%0Aسرور: \$(hostname)"
   else
     log_hc "تونل هنوز قطع است"
-    tg "🚨 <b>تونل قطع است و وصل نشد!</b>%0Aسرور: \$(hostname)%0Aبررسی دستی لازم است"
+    tg "🚨 <b>تونل قطع است و وصل نشد!</b>%0Aبررسی دستی لازم است%0Aسرور: \$(hostname)"
   fi
 fi
 
 if ! systemctl is-active --quiet x-ui; then
   log_hc "X-UI متوقف بود، ری‌استارت..."
   systemctl restart x-ui
-  tg "🔄 <b>X-UI ری‌استارت شد</b>%0Aسرور: \$(hostname)"
+  tg "🔄 <b>X-UI ری‌استارت شد (خودکار)</b>%0Aسرور: \$(hostname)"
 fi
 HCEOF2
   fi
@@ -456,7 +447,7 @@ HCEOF2
 
   if ! crontab -l 2>/dev/null | grep -q "wg-health-check"; then
     (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/wg-health-check") | crontab -
-    show_success "Health check هر ۵ دقیقه اجرا می‌شود"
+    show_success "بررسی سلامت هر ۵ دقیقه تنظیم شد"
   fi
 
   cat > /etc/logrotate.d/wg-xui <<LREOF
@@ -469,7 +460,7 @@ HCEOF2
     copytruncate
 }
 LREOF
-  show_success "logrotate تنظیم شد (max 15MB)"
+  show_success "مدیریت لاگ تنظیم شد (حداکثر ۱۵ مگابایت)"
 }
 
 # ─────────────────────────────────────────────
@@ -478,16 +469,16 @@ LREOF
 manage_tunnel() {
   detect_setup
   show_header "مدیریت تونل"
-  echo "1) وضعیت تونل"
-  echo "2) ری‌استارت تونل"
-  echo "3) توقف تونل"
-  echo "4) شروع تونل"
-  echo "5) نمایش لاگ (آخرین ۵۰ خط)"
-  echo "6) تست اتصال"
-  echo "7) پشتیبان‌گیری فوری X-UI"
-  echo "8) وضعیت ربات تلگرام"
-  echo "9) بازگشت"
-  read -p "گزینه: " mgmt_choice
+  echo "   1) وضعیت تونل"
+  echo "   2) ری‌استارت تونل"
+  echo "   3) توقف تونل"
+  echo "   4) شروع تونل"
+  echo "   5) نمایش لاگ (آخرین ۵۰ خط)"
+  echo "   6) تست اتصال"
+  echo "   7) پشتیبان‌گیری فوری X-UI"
+  echo "   8) وضعیت ربات تلگرام"
+  echo "   9) بازگشت"
+  read -p "   گزینه: " mgmt_choice
 
   case "$mgmt_choice" in
     1)
@@ -499,35 +490,32 @@ manage_tunnel() {
     2)
       systemctl restart "${WG_CMD}@${WG_IFACE}"
       show_success "تونل ری‌استارت شد"
-      log "MANAGE" "tunnel restarted"
-      tg_send "🔄 <b>تونل ری‌استارت شد</b> (دستی)%0Aسرور: $(hostname)"
+      tg_send "🔄 <b>تونل ری‌استارت شد (دستی)</b>%0Aسرور: $(hostname)"
       ;;
     3)
       systemctl stop "${WG_CMD}@${WG_IFACE}"
       show_success "تونل متوقف شد"
-      log "MANAGE" "tunnel stopped"
-      tg_send "⏹ <b>تونل متوقف شد</b> (دستی)%0Aسرور: $(hostname)"
+      tg_send "⏹ <b>تونل متوقف شد (دستی)</b>%0Aسرور: $(hostname)"
       ;;
     4)
       systemctl start "${WG_CMD}@${WG_IFACE}"
       show_success "تونل شروع شد"
-      log "MANAGE" "tunnel started"
-      tg_send "▶️ <b>تونل شروع شد</b> (دستی)%0Aسرور: $(hostname)"
+      tg_send "▶️ <b>تونل شروع شد (دستی)</b>%0Aسرور: $(hostname)"
       ;;
     5)
       show_header "آخرین ۵۰ خط لاگ"
-      tail -n 50 "$LOG_FILE" 2>/dev/null || echo "لاگ خالی است"
+      tail -n 50 "$LOG_FILE" 2>/dev/null || echo "   لاگ خالی است"
       ;;
     6)
-      read -p "IP داخلی سرور خارجی (پیشفرض: 10.8.0.1): " fg_ip
+      read -p "   IP داخلی سرور خارجی (پیشفرض: 10.8.0.1): " fg_ip
       run_post_install_test "iran" "${fg_ip:-10.8.0.1}"
       ;;
     7)
-      show_info "در حال ارسال بکاپ..."
-      /usr/local/bin/wg-xui-backup 2>/dev/null && show_success "بکاپ ارسال شد" || show_error "بکاپ ناموفق بود"
+      show_info "در حال ارسال بکاپ به تلگرام..."
+      /usr/local/bin/wg-xui-backup 2>/dev/null && show_success "بکاپ ارسال شد" || show_error "بکاپ ناموفق — آیا تلگرام تنظیم شده؟"
       ;;
     8)
-      systemctl status wg-tgbot --no-pager || echo "ربات نصب نشده"
+      systemctl status wg-tgbot --no-pager 2>/dev/null || echo "   ربات نصب نشده است"
       ;;
     9) return ;;
     *) show_error "گزینه نامعتبر" ;;
@@ -538,14 +526,23 @@ manage_tunnel() {
 # نصب سرور خارجی
 # ─────────────────────────────────────────────
 install_foreign() {
-  show_header "در حال راه‌اندازی سرور خارجی"
+  show_header "نصب سرور خارجی"
 
+  echo -e "
+   ${CYAN}این مرحله روی سرور خارجی (مثلاً آلمان یا هلند) اجرا می‌شود.${NC}
+   ابتدا باید این سرور نصب شود، سپس سرور ایران.
+"
+
+  # ─── تلگرام ───
   setup_telegram
 
+  # ─── نصب AmneziaWG ───
+  show_step "نصب پکیج‌های مورد نیاز"
   install_amneziawg
   apt install -y curl qrencode iptables-persistent
 
-  show_info "تولید کلیدهای رمزنگاری..."
+  # ─── تولید کلید ───
+  show_step "تولید کلیدهای رمزنگاری"
   umask 077
   mkdir -p /etc/amnezia/amneziawg
 
@@ -553,7 +550,6 @@ install_foreign() {
     awg genkey | tee /etc/amnezia/amneziawg/private.key | awg pubkey > /etc/amnezia/amneziawg/public.key
     WG_CMD="awg-quick"; WG_CONF_DIR="/etc/amnezia/amneziawg"; WG_IFACE="awg0"
   else
-    show_info "AmneziaWG نصب نشد، fallback به WireGuard..."
     apt install -y wireguard
     wg genkey | tee /etc/amnezia/amneziawg/private.key | wg pubkey > /etc/amnezia/amneziawg/public.key
     WG_CMD="wg-quick"; WG_CONF_DIR="/etc/wireguard"; WG_IFACE="wg0"
@@ -562,9 +558,19 @@ install_foreign() {
   PRIVATE_KEY=$(cat /etc/amnezia/amneziawg/private.key)
   PUBLIC_KEY=$(cat /etc/amnezia/amneziawg/public.key)
 
-  read -p "IP داخلی سرور خارجی (پیشنهاد: 10.8.0.1): " WG_IP
+  # ─── اطلاعات شبکه ───
+  show_step "تنظیمات شبکه تونل"
+
+  show_note "IP تونل یک آدرس خصوصی فرضی است (مثل ۱۰.۸.۰.۱) که فقط داخل تونل استفاده می‌شود."
+  show_note "این IP هیچ ربطی به IP عمومی سرور ندارد. مقدار پیشنهادی را قبول کنید."
+  show_ask "IP داخلی تونل برای این سرور (پیشنهاد: 10.8.0.1):"
+  read -p "   > " WG_IP
   WG_IP=${WG_IP:-10.8.0.1}
-  read -p "پورت تونل (پیشفرض: 51820): " WG_PORT
+
+  show_note "پورتی که سرور ایران از طریق آن به اینجا وصل می‌شود."
+  show_note "این پورت باید در فایروال سرور خارجی باز باشد (UDP). پیشفرض کافی است."
+  show_ask "پورت تونل (پیشفرض: 51820):"
+  read -p "   > " WG_PORT
   WG_PORT=${WG_PORT:-51820}
 
   WAN_IF=$(ip route show default | awk '/default/ {print $5; exit}')
@@ -597,19 +603,36 @@ EOF
   echo "$PUBLIC_KEY" > /root/foreign_pubkey.txt
   run_post_install_test "foreign"
 
-  show_success "نصب سرور خارجی تکمیل شد!"
-  show_info "کلید عمومی سرور خارجی: $PUBLIC_KEY"
-  echo
+  # ─── نمایش نتیجه ───
+  show_header "نصب سرور خارجی تکمیل شد"
+
+  echo -e "
+   ${GREEN}کلید عمومی این سرور (برای سرور ایران لازم است):${NC}
+   ${YELLOW}$PUBLIC_KEY${NC}
+
+   (در فایل /root/foreign_pubkey.txt هم ذخیره شد)
+"
+  echo "   QR کد کلید عمومی:"
   qrencode -t ansiutf8 "$PUBLIC_KEY"
-  echo
-  show_info "مرحله بعد:"
-  echo "  ۱. اسکریپت را روی سرور ایران اجرا کنید (گزینه ۲)"
-  echo "  ۲. کلید عمومی سرور ایران را بگیرید"
-  echo "  ۳. روی همین سرور خارجی دستور زیر را اجرا کنید:"
-  echo "  ${WG_CMD%-quick} set $WG_IFACE peer <PUBLIC_KEY_IRAN> allowed-ips 10.8.0.2/32"
-  echo "  ${WG_CMD%-quick}-quick save $WG_IFACE"
-  echo
-  tg_send "✅ <b>سرور خارجی نصب شد</b>%0Aسرور: $(hostname)%0AIP: $(curl -s --max-time 5 ifconfig.me)"
+
+  echo -e "
+   ${CYAN}═══════════════════ مراحل بعدی ═══════════════════${NC}
+
+   ${GREEN}مرحله ۱:${NC} اسکریپت را روی سرور ایران اجرا کنید (گزینه ۲)
+            اطلاعاتی که باید با خود داشته باشید:
+            • IP عمومی این سرور خارجی: ${YELLOW}$(curl -s --max-time 5 ifconfig.me || echo نامشخص)${NC}
+            • پورت تونل: ${YELLOW}$WG_PORT${NC}
+            • کلید عمومی بالا
+
+   ${GREEN}مرحله ۲:${NC} بعد از نصب سرور ایران، کلید عمومی آن را بگیرید
+            و روی همین سرور دستور زیر را اجرا کنید:
+
+   ${YELLOW}${WG_CMD%-quick} set $WG_IFACE peer <کلید-عمومی-سرور-ایران> allowed-ips 10.8.0.2/32${NC}
+   ${YELLOW}${WG_CMD%-quick}-quick save $WG_IFACE${NC}
+
+   ${CYAN}═══════════════════════════════════════════════════${NC}
+"
+  tg_send "✅ <b>سرور خارجی نصب شد</b>%0Aسرور: $(hostname)%0AIP: $(curl -s --max-time 5 ifconfig.me || echo نامشخص)"
   log "INSTALL" "foreign server installed"
 }
 
@@ -617,23 +640,51 @@ EOF
 # نصب سرور ایران
 # ─────────────────────────────────────────────
 install_iran() {
-  show_header "در حال راه‌اندازی سرور ایران"
+  show_header "نصب سرور ایران"
+
+  echo -e "
+   ${CYAN}این مرحله روی سرور ایران اجرا می‌شود.${NC}
+   ${RED}قبل از شروع مطمئن شوید سرور خارجی را قبلاً نصب کرده‌اید.${NC}
+   اطلاعات سرور خارجی را آماده داشته باشید.
+"
 
   setup_telegram
 
+  show_step "نصب پکیج‌های مورد نیاز"
   install_amneziawg
   apt install -y curl
 
-  read -p "IP داخلی سرور ایران (پیشنهاد: 10.8.0.2): " WG_IP
+  # ─── اطلاعات تونل ───
+  show_step "اطلاعات اتصال به سرور خارجی"
+
+  show_note "آدرس IP خصوصی تونل برای این سرور ایران (باید با سرور خارجی در یک رنج باشد)."
+  show_note "اگر سرور خارجی 10.8.0.1 گرفته، اینجا 10.8.0.2 وارد کنید."
+  show_ask "IP داخلی تونل برای این سرور ایران (پیشنهاد: 10.8.0.2):"
+  read -p "   > " WG_IP
   WG_IP=${WG_IP:-10.8.0.2}
-  read -p "IP عمومی سرور خارجی: " FOREIGN_IP
-  read -p "پورت تونل سرور خارجی (پیشفرض: 51820): " WG_PORT
+
+  show_note "IP عمومی یعنی آدرسی که در اینترنت به سرور خارجی وصل می‌شوید (نه IP تونل)."
+  show_note "مثال: 185.92.12.34"
+  show_ask "IP عمومی سرور خارجی (آدرس واقعی سرور خارجی در اینترنت):"
+  read -p "   > " FOREIGN_IP
+
+  show_note "همان پورتی که موقع نصب سرور خارجی وارد کردید."
+  show_ask "پورت تونل سرور خارجی (پیشفرض: 51820):"
+  read -p "   > " WG_PORT
   WG_PORT=${WG_PORT:-51820}
-  read -p "کلید عمومی سرور خارجی: " FOREIGN_PUBLIC_KEY
-  read -p "IP داخلی سرور خارجی (پیشفرض: 10.8.0.1): " FOREIGN_WG_IP
+
+  show_note "این کلید را هنگام نصب سرور خارجی به شما نشان داد."
+  show_note "در سرور خارجی هم در /root/foreign_pubkey.txt ذخیره شده."
+  show_ask "کلید عمومی سرور خارجی (رشته بلند حروف و اعداد):"
+  read -p "   > " FOREIGN_PUBLIC_KEY
+
+  show_note "IP خصوصی تونل سرور خارجی — همان چیزی که موقع نصبش وارد کردید (معمولاً 10.8.0.1)."
+  show_ask "IP داخلی تونل سرور خارجی (پیشفرض: 10.8.0.1):"
+  read -p "   > " FOREIGN_WG_IP
   FOREIGN_WG_IP=${FOREIGN_WG_IP:-10.8.0.1}
 
-  show_info "تولید کلیدهای رمزنگاری..."
+  # ─── تولید کلید ───
+  show_step "تولید کلیدهای رمزنگاری"
   umask 077
   mkdir -p /etc/amnezia/amneziawg
 
@@ -641,7 +692,6 @@ install_iran() {
     awg genkey | tee /etc/amnezia/amneziawg/private.key | awg pubkey > /etc/amnezia/amneziawg/public.key
     WG_CMD="awg-quick"; WG_CONF_DIR="/etc/amnezia/amneziawg"; WG_IFACE="awg0"
   else
-    show_info "AmneziaWG نصب نشد، fallback به WireGuard..."
     apt install -y wireguard
     wg genkey | tee /etc/amnezia/amneziawg/private.key | wg pubkey > /etc/amnezia/amneziawg/public.key
     WG_CMD="wg-quick"; WG_CONF_DIR="/etc/wireguard"; WG_IFACE="wg0"
@@ -673,10 +723,12 @@ EOF
   systemctl enable --now "${WG_CMD}@${WG_IFACE}"
   setup_health_check "iran" "$FOREIGN_WG_IP"
 
-  show_info "در حال نصب پنل 3X-UI..."
+  # ─── X-UI ───
+  show_step "نصب پنل 3X-UI"
+  show_note "پنل مدیریت کاربران VPN نصب می‌شود. این فرآیند چند دقیقه طول می‌کشد."
   bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh) <<< "y" || {
-    show_error "نصب 3X-UI ناموفق — دستی نصب کنید:"
-    echo "  bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)"
+    show_error "نصب 3X-UI ناموفق — برای نصب دستی:"
+    echo "   bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)"
   }
 
   ufw allow ssh
@@ -691,20 +743,33 @@ EOF
   echo "$PUBLIC_KEY" > /root/iran_pubkey.txt
   run_post_install_test "iran" "$FOREIGN_WG_IP"
 
-  show_success "نصب سرور ایران تکمیل شد!"
+  # ─── نمایش نتیجه ───
   PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || echo "نامشخص")
-  show_info "پنل مدیریت 3X-UI: http://${PUBLIC_IP}:54321"
-  show_info "نام کاربری: admin  |  رمز عبور: admin"
-  echo -e "  ${RED}⚠️  رمز عبور را بلافاصله تغییر دهید!${NC}"
-  echo
-  show_info "کلید عمومی سرور ایران:"
-  echo "  $PUBLIC_KEY"
-  echo
-  show_info "مرحله آخر — روی سرور خارجی اجرا کنید:"
-  echo "  ${WG_CMD%-quick} set $WG_IFACE peer $PUBLIC_KEY allowed-ips $WG_IP/32"
-  echo "  ${WG_CMD%-quick}-quick save $WG_IFACE"
-  echo
-  tg_send "✅ <b>سرور ایران نصب شد</b>%0Aسرور: $(hostname)%0AIP: ${PUBLIC_IP}%0Aپنل: http://${PUBLIC_IP}:54321"
+  show_header "نصب سرور ایران تکمیل شد"
+
+  echo -e "
+   ${GREEN}پنل مدیریت 3X-UI:${NC}
+   آدرس:     ${YELLOW}http://${PUBLIC_IP}:54321${NC}
+   کاربری:   ${YELLOW}admin${NC}
+   رمز:       ${YELLOW}admin${NC}
+   ${RED}⚠️  بلافاصله رمز عبور را از پنل تغییر دهید!${NC}
+
+   ${GREEN}کلید عمومی این سرور ایران (برای مرحله آخر لازم است):${NC}
+   ${YELLOW}$PUBLIC_KEY${NC}
+
+   (در فایل /root/iran_pubkey.txt هم ذخیره شد)
+
+   ${CYAN}═══════════════════ مرحله آخر ═══════════════════${NC}
+
+   ${RED}مهم:${NC} روی سرور خارجی این دو دستور را اجرا کنید
+        تا ارتباط دو طرفه تونل کامل شود:
+
+   ${YELLOW}${WG_CMD%-quick} set $WG_IFACE peer $PUBLIC_KEY allowed-ips $WG_IP/32${NC}
+   ${YELLOW}${WG_CMD%-quick}-quick save $WG_IFACE${NC}
+
+   ${CYAN}═══════════════════════════════════════════════════${NC}
+"
+  tg_send "✅ <b>سرور ایران نصب شد</b>%0Aسرور: $(hostname)%0AIP: ${PUBLIC_IP}%0Aپنل: http://${PUBLIC_IP}:54321%0A%0A⚠️ رمز عبور پنل را تغییر دهید!"
   log "INSTALL" "iran server installed"
 }
 
@@ -712,11 +777,17 @@ EOF
 # منوی اصلی
 # ─────────────────────────────────────────────
 show_header "مدیریت تونل AmneziaWG + 3X-UI"
-echo "1) نصب روی سرور خارجی"
-echo "2) نصب روی سرور ایران"
-echo "3) مدیریت تونل"
-echo "4) خروج"
-read -p "لطفاً گزینه مورد نظر را انتخاب کنید (1-4): " choice
+echo -e "
+   ${YELLOW}ترتیب نصب:${NC}
+   ۱. ابتدا روی سرور خارجی (گزینه ۱) نصب کنید
+   ۲. سپس روی سرور ایران (گزینه ۲) نصب کنید
+   ۳. در آخر یک دستور روی سرور خارجی اجرا کنید (توضیح داده می‌شود)
+"
+echo "   1) نصب روی سرور خارجی"
+echo "   2) نصب روی سرور ایران"
+echo "   3) مدیریت تونل"
+echo "   4) خروج"
+read -p "   گزینه مورد نظر (1-4): " choice
 
 case "$choice" in
   1) install_foreign ;;
