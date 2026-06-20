@@ -108,24 +108,16 @@ setup_telegram() {
     return
   fi
 
-  show_info "در حال بررسی توکن..."
-  local result
-  result=$(curl -s --max-time 10 "https://api.telegram.org/bot${input_token}/getMe")
-  if echo "$result" | grep -q '"ok":true'; then
-    local bot_name
-    bot_name=$(echo "$result" | grep -o '"username":"[^"]*"' | cut -d'"' -f4)
-    mkdir -p /etc/wg-xui
-    cat > "$TG_CONFIG" <<EOF
+  # ذخیره توکن بدون تست آنلاین — سرور ایران قبل از وصل شدن تونل
+  # به api.telegram.org دسترسی ندارد (فیلتر است)
+  mkdir -p /etc/wg-xui
+  cat > "$TG_CONFIG" <<EOF
 TG_TOKEN="${input_token}"
 TG_ADMIN_ID="${input_admin_id}"
 EOF
-    chmod 600 "$TG_CONFIG"
-    show_success "ربات @${bot_name} با موفقیت تنظیم شد"
-    tg_send "✅ <b>ربات متصل شد</b>%0Aسرور: $(hostname)%0AIP: $(curl -s --max-time 5 ifconfig.me || echo نامشخص)"
-    show_success "پیام تست در تلگرام ارسال شد — بررسی کنید"
-  else
-    show_error "توکن نامعتبر است — ربات تلگرام تنظیم نشد"
-  fi
+  chmod 600 "$TG_CONFIG"
+  show_success "اطلاعات ربات ذخیره شد"
+  show_info "تست ارسال پیام بعد از وصل شدن تونل انجام می‌شود"
 }
 
 # ─────────────────────────────────────────────
@@ -326,15 +318,31 @@ BKEOF
 # ─────────────────────────────────────────────
 # نصب AmneziaWG
 # ─────────────────────────────────────────────
+wait_apt_lock() {
+  local i=0
+  while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend &>/dev/null; do
+    if [ $i -eq 0 ]; then show_info "منتظر آزاد شدن apt lock..."; fi
+    sleep 3; ((i++)) || true
+    if [ $i -gt 40 ]; then
+      show_error "apt lock بعد از ۲ دقیقه آزاد نشد"
+      exit 1
+    fi
+  done
+}
+
 install_amneziawg() {
   show_info "نصب AmneziaWG (ضد شناسایی توسط فیلترینگ)..."
+  wait_apt_lock
   apt update -qq
   if ! command -v awg-quick &>/dev/null; then
+    wait_apt_lock
     apt install -y software-properties-common
     add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
+    wait_apt_lock
     apt update -qq
     apt install -y amneziawg amneziawg-tools || {
       show_info "PPA در دسترس نیست، نصب WireGuard معمولی..."
+      wait_apt_lock
       apt install -y wireguard-dkms wireguard-tools linux-headers-$(uname -r) git make gcc
     }
   fi
@@ -742,6 +750,24 @@ EOF
 
   echo "$PUBLIC_KEY" > /root/iran_pubkey.txt
   run_post_install_test "iran" "$FOREIGN_WG_IP"
+
+  # تست تلگرام بعد از وصل شدن تونل
+  tg_load
+  if [ -n "$TG_TOKEN" ]; then
+    show_info "تست ارسال پیام به تلگرام از طریق تونل..."
+    sleep 2
+    local tg_result
+    tg_result=$(curl -s --max-time 10 \
+      "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+      -d "chat_id=${TG_ADMIN_ID}" \
+      -d "text=✅ <b>سرور ایران نصب شد و تونل وصل است</b>" \
+      -d "parse_mode=HTML" 2>/dev/null || echo "fail")
+    if echo "$tg_result" | grep -q '"ok":true'; then
+      show_success "پیام تست در تلگرام ارسال شد"
+    else
+      show_info "تلگرام هنوز در دسترس نیست — بعد از تکمیل مرحله آخر وصل می‌شود"
+    fi
+  fi
 
   # ─── نمایش نتیجه ───
   PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || echo "نامشخص")
