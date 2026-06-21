@@ -143,8 +143,8 @@ install_telegram_bot() {
   [ -z "$TG_TOKEN" ] && return 0
 
   show_info "نصب سرویس ربات تلگرام..."
-  apt install -y python3 python3-pip -qq
-  pip3 install requests -q
+  wait_apt_lock
+  apt install -y python3 python3-requests -qq
 
   detect_setup
 
