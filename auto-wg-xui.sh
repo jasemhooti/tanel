@@ -772,12 +772,18 @@ install_iran() {
   DEFAULT_GW=$(ip route show default | awk '/default/ {print $3; exit}')
   DEFAULT_IF=$(ip route show default | awk '/default/ {print $5; exit}')
 
+  # نصب resolvconf در صورت نیاز (برای تنظیم DNS در wg-quick)
+  if ! command -v resolvconf &>/dev/null; then
+    wait_apt_lock
+    apt install -y resolvconf -qq 2>/dev/null || true
+  fi
+
   mkdir -p "$WG_CONF_DIR"
   cat > "$WG_CONF_DIR/${WG_IFACE}.conf" <<EOF
 [Interface]
 PrivateKey = $PRIVATE_KEY
 Address = $WG_IP/24
-DNS = 8.8.8.8, 1.1.1.1
+$(command -v resolvconf &>/dev/null && echo "DNS = 8.8.8.8, 1.1.1.1" || echo "# DNS حذف شد (resolvconf نصب نیست)")
 
 PostUp   = ip route add $FOREIGN_IP via $DEFAULT_GW dev $DEFAULT_IF 2>/dev/null || true
 PostDown = ip route del $FOREIGN_IP via $DEFAULT_GW dev $DEFAULT_IF 2>/dev/null || true
