@@ -581,7 +581,7 @@ install_foreign() {
   # ─── نصب AmneziaWG ───
   show_step "نصب پکیج‌های مورد نیاز"
   install_amneziawg
-  apt install -y curl qrencode iptables-persistent
+  apt install -y curl qrencode ufw
 
   # ─── تولید کلید ───
   show_step "تولید کلیدهای رمزنگاری"
