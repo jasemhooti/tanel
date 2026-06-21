@@ -383,18 +383,32 @@ install_amneziawg() {
   show_info "نصب AmneziaWG (ضد شناسایی توسط فیلترینگ)..."
   wait_apt_lock
   apt update -qq
-  if ! command -v awg-quick &>/dev/null; then
-    wait_apt_lock
-    apt install -y software-properties-common
-    add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
-    wait_apt_lock
-    apt update -qq
-    apt install -y amneziawg amneziawg-tools || {
-      show_info "PPA در دسترس نیست، نصب WireGuard معمولی..."
-      wait_apt_lock
-      apt install -y wireguard-dkms wireguard-tools linux-headers-$(uname -r) git make gcc
-    }
+  if command -v awg-quick &>/dev/null; then
+    return 0
   fi
+
+  wait_apt_lock
+  apt install -y software-properties-common
+  add-apt-repository -y ppa:amnezia/ppa 2>/dev/null || true
+  wait_apt_lock
+  apt update -qq
+
+  # تلاش برای نصب AmneziaWG
+  if apt install -y amneziawg amneziawg-tools 2>/dev/null && command -v awg-quick &>/dev/null; then
+    show_success "AmneziaWG نصب شد"
+    return 0
+  fi
+
+  # پاکسازی dpkg خراب شده بعد از خطای DKMS
+  show_info "AmneziaWG روی این kernel پشتیبانی نمی‌شود، پاکسازی و نصب WireGuard..."
+  apt remove -y --purge amneziawg amneziawg-dkms amneziawg-tools 2>/dev/null || true
+  dpkg --configure -a 2>/dev/null || true
+  apt install -f -y 2>/dev/null || true
+
+  # نصب WireGuard معمولی به عنوان جایگزین
+  wait_apt_lock
+  apt install -y wireguard wireguard-tools
+  show_success "WireGuard نصب شد (جایگزین AmneziaWG)"
 }
 
 # ─────────────────────────────────────────────
