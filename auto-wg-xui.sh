@@ -46,6 +46,21 @@ detect_setup() {
   fi
 }
 
+setup_firewall() {
+  # اطمینان از نصب ufw (ممکن است توسط iptables-persistent حذف شده باشد)
+  if ! command -v ufw &>/dev/null; then
+    show_info "نصب ufw..."
+    wait_apt_lock
+    apt install -y ufw
+  fi
+  for port in "$@"; do
+    ufw allow "$port"
+  done
+  ufw allow ssh
+  ufw --force enable
+  show_success "فایروال تنظیم شد"
+}
+
 # ─────────────────────────────────────────────
 # توابع تلگرام
 # ─────────────────────────────────────────────
@@ -635,9 +650,7 @@ EOF
   sysctl -p
 
   systemctl enable --now "${WG_CMD}@${WG_IFACE}"
-  ufw allow "$WG_PORT/udp"
-  ufw allow ssh
-  ufw --force enable
+  setup_firewall "$WG_PORT/udp"
 
   setup_health_check "foreign"
   install_telegram_bot
@@ -773,11 +786,7 @@ EOF
     echo "   bash <(curl -Ls https://raw.githubusercontent.com/MHSanaei/3x-ui/master/install.sh)"
   }
 
-  ufw allow ssh
-  ufw allow 80/tcp
-  ufw allow 443/tcp
-  ufw allow 54321/tcp
-  ufw --force enable
+  setup_firewall "80/tcp" "443/tcp" "54321/tcp"
 
   install_telegram_bot
   setup_xui_backup
